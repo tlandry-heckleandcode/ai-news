@@ -159,18 +159,46 @@ class NewsFetcher:
         clean = re.sub(r'\s+', ' ', clean)
         return clean.strip()
     
+    def _resolve_redirect_url(self, url: str) -> str:
+        """
+        Follow redirects to get the final article URL.
+        Google News RSS returns redirect URLs that need to be resolved.
+        
+        Args:
+            url: Original URL (possibly a redirect)
+            
+        Returns:
+            Final URL after following redirects
+        """
+        try:
+            # Use HEAD request to follow redirects without downloading content
+            response = self.session.head(url, timeout=5, allow_redirects=True)
+            if response.url and response.url != url:
+                return response.url
+            
+            # Some sites block HEAD, try GET with stream to get redirect URL
+            response = self.session.get(url, timeout=5, allow_redirects=True, stream=True)
+            response.close()  # Don't download the body
+            return response.url
+            
+        except Exception:
+            return url  # Fallback to original URL
+    
     def _fetch_article_image(self, url: str) -> Optional[str]:
         """
         Fetch the og:image meta tag from an article page.
         
         Args:
-            url: Article URL
+            url: Article URL (may be a Google News redirect URL)
             
         Returns:
             Image URL or None if not found
         """
         try:
-            response = self.session.get(url, timeout=5, allow_redirects=True)
+            # Resolve Google News redirect URLs to get actual article URL
+            resolved_url = self._resolve_redirect_url(url)
+            
+            response = self.session.get(resolved_url, timeout=5, allow_redirects=True)
             if response.status_code != 200:
                 return None
             

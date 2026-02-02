@@ -2,6 +2,7 @@
 YouTube Data API integration for fetching trending AI videos.
 """
 
+import html
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -76,7 +77,7 @@ class YouTubeFetcher:
                 
                 videos.append({
                     "id": video_id,
-                    "title": snippet["title"],
+                    "title": html.unescape(snippet["title"]),
                     "channel": snippet["channelTitle"],
                     "published_at": snippet["publishedAt"],
                     "description": snippet.get("description", ""),
