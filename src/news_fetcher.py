@@ -225,6 +225,20 @@ class NewsFetcher:
         text = re.sub(r'\s+', ' ', text)
         return text.strip()
     
+    def _validate_image_url(self, url: str) -> bool:
+        """Check if an image URL is accessible."""
+        if not url:
+            return False
+        try:
+            response = self.session.head(url, timeout=2, allow_redirects=True)
+            # Check for successful response and image content type
+            if response.status_code == 200:
+                content_type = response.headers.get('Content-Type', '')
+                return content_type.startswith('image/')
+            return False
+        except Exception:
+            return False
+    
     def _fetch_article_metadata(self, url: str) -> dict:
         """
         Fetch og:image and og:description meta tags from an article page.
@@ -254,22 +268,25 @@ class NewsFetcher:
             html_content = response.text
             
             # Extract og:image
+            image_url = None
             og_image_pattern = r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']'
             og_image_match = re.search(og_image_pattern, html_content, re.IGNORECASE)
             if og_image_match:
                 image_url = og_image_match.group(1)
-                # Strip query parameters - some sites use ?auto=webp which breaks in Slack
-                if '?' in image_url:
-                    image_url = image_url.split('?')[0]
-                result["image"] = image_url
             else:
                 # Try alternate format: content before property
                 og_image_alt = r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']'
                 og_image_match_alt = re.search(og_image_alt, html_content, re.IGNORECASE)
                 if og_image_match_alt:
                     image_url = og_image_match_alt.group(1)
-                    if '?' in image_url:
-                        image_url = image_url.split('?')[0]
+            
+            # Validate image URL if found
+            if image_url:
+                # Strip query parameters - some sites use ?auto=webp which breaks in Slack
+                if '?' in image_url:
+                    image_url = image_url.split('?')[0]
+                # Only include if the image is actually accessible
+                if self._validate_image_url(image_url):
                     result["image"] = image_url
             
             # Extract og:description
