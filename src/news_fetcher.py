@@ -52,7 +52,7 @@ class NewsFetcher:
     def search_news(
         self,
         query: str,
-        days_back: int = 7,
+        days_back: int = 1,
         max_results: int = 10
     ) -> list[dict]:
         """
@@ -159,6 +159,40 @@ class NewsFetcher:
         clean = re.sub(r'\s+', ' ', clean)
         return clean.strip()
     
+    def _fetch_article_image(self, url: str) -> Optional[str]:
+        """
+        Fetch the og:image meta tag from an article page.
+        
+        Args:
+            url: Article URL
+            
+        Returns:
+            Image URL or None if not found
+        """
+        try:
+            response = self.session.get(url, timeout=5, allow_redirects=True)
+            if response.status_code != 200:
+                return None
+            
+            # Look for og:image meta tag
+            # Pattern: <meta property="og:image" content="...">
+            og_pattern = r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']'
+            og_match = re.search(og_pattern, response.text, re.IGNORECASE)
+            if og_match:
+                return og_match.group(1)
+            
+            # Try alternate format: content before property
+            og_pattern_alt = r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']'
+            og_match_alt = re.search(og_pattern_alt, response.text, re.IGNORECASE)
+            if og_match_alt:
+                return og_match_alt.group(1)
+            
+            return None
+            
+        except Exception:
+            # Silently fail - thumbnails are optional
+            return None
+    
     def calculate_trending_score(
         self,
         article: dict,
@@ -201,7 +235,7 @@ class NewsFetcher:
     def fetch_trending_articles(
         self,
         search_terms: Optional[list[str]] = None,
-        days_back: int = 7,
+        days_back: int = 1,
         max_results_per_term: int = 10,
         top_n: int = 3
     ) -> list[dict]:
@@ -252,8 +286,13 @@ class NewsFetcher:
         
         # Sort by trending score and return top N
         all_articles.sort(key=lambda a: a["trending_score"], reverse=True)
+        top_articles = all_articles[:top_n]
         
-        return all_articles[:top_n]
+        # Fetch thumbnails for top articles only (to minimize HTTP requests)
+        for article in top_articles:
+            article["thumbnail"] = self._fetch_article_image(article.get("url", ""))
+        
+        return top_articles
 
 
 def main():

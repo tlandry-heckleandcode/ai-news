@@ -34,7 +34,7 @@ class YouTubeFetcher:
     def search_videos(
         self,
         query: str,
-        days_back: int = 7,
+        days_back: int = 1,
         max_results: int = 10
     ) -> list[dict]:
         """
@@ -66,6 +66,14 @@ class YouTubeFetcher:
                 video_id = item["id"]["videoId"]
                 snippet = item["snippet"]
                 
+                # Get thumbnail URL (prefer medium, fallback to default)
+                thumbnails = snippet.get("thumbnails", {})
+                thumbnail_url = (
+                    thumbnails.get("medium", {}).get("url") or
+                    thumbnails.get("default", {}).get("url") or
+                    ""
+                )
+                
                 videos.append({
                     "id": video_id,
                     "title": snippet["title"],
@@ -73,6 +81,7 @@ class YouTubeFetcher:
                     "published_at": snippet["publishedAt"],
                     "description": snippet.get("description", ""),
                     "url": f"https://www.youtube.com/watch?v={video_id}",
+                    "thumbnail": thumbnail_url,
                     "search_term": query
                 })
             
@@ -168,7 +177,7 @@ class YouTubeFetcher:
     def fetch_trending_videos(
         self,
         search_terms: Optional[list[str]] = None,
-        days_back: int = 7,
+        days_back: int = 1,
         max_results_per_term: int = 10,
         top_n: int = 3
     ) -> list[dict]:

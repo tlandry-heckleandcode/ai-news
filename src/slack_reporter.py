@@ -115,25 +115,34 @@ class SlackReporter:
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": "*:tv: TRENDING YOUTUBE VIDEOS (Last 7 Days)*"
+                "text": "*:tv: TRENDING YOUTUBE VIDEOS (Last 24 Hours)*"
             }
         })
         
         if videos:
             for i, video in enumerate(videos, 1):
-                blocks.append({
+                section = {
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
                         "text": self.format_video(video, i)
                     }
-                })
+                }
+                # Add thumbnail if available
+                thumbnail = video.get("thumbnail")
+                if thumbnail:
+                    section["accessory"] = {
+                        "type": "image",
+                        "image_url": thumbnail,
+                        "alt_text": video.get("title", "Video thumbnail")[:75]
+                    }
+                blocks.append(section)
         else:
             blocks.append({
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": "_No new trending videos found in the last 7 days._"
+                    "text": "_No new trending videos found in the last 24 hours._"
                 }
             })
         
@@ -144,25 +153,34 @@ class SlackReporter:
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": "*:newspaper: TRENDING ARTICLES (Last 7 Days)*"
+                "text": "*:newspaper: TRENDING ARTICLES (Last 24 Hours)*"
             }
         })
         
         if articles:
             for i, article in enumerate(articles, 1):
-                blocks.append({
+                section = {
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
                         "text": self.format_article(article, i)
                     }
-                })
+                }
+                # Add thumbnail if available
+                thumbnail = article.get("thumbnail")
+                if thumbnail:
+                    section["accessory"] = {
+                        "type": "image",
+                        "image_url": thumbnail,
+                        "alt_text": article.get("title", "Article thumbnail")[:75]
+                    }
+                blocks.append(section)
         else:
             blocks.append({
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": "_No new trending articles found in the last 7 days._"
+                    "text": "_No new trending articles found in the last 24 hours._"
                 }
             })
         

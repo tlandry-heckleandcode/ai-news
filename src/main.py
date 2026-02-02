@@ -58,7 +58,7 @@ def get_config() -> dict:
     return {
         "search_terms": get_search_terms(),
         "max_results_per_term": int(os.getenv("MAX_RESULTS_PER_TERM", "10")),
-        "days_lookback": int(os.getenv("DAYS_LOOKBACK", "7")),
+        "days_lookback": int(os.getenv("DAYS_LOOKBACK", "1")),
         "top_n": 3,
     }
 
@@ -137,7 +137,7 @@ def print_results(videos: list[dict], articles: list[dict]):
     print("AI TRENDS REPORT")
     print("=" * 60)
     
-    print("\nTRENDING YOUTUBE VIDEOS (Last 7 Days)")
+    print("\nTRENDING YOUTUBE VIDEOS (Last 24 Hours)")
     print("-" * 40)
     if videos:
         for i, video in enumerate(videos, 1):
@@ -149,7 +149,7 @@ def print_results(videos: list[dict], articles: list[dict]):
     else:
         print("No trending videos found.")
     
-    print("\n\nTRENDING ARTICLES (Last 7 Days)")
+    print("\n\nTRENDING ARTICLES (Last 24 Hours)")
     print("-" * 40)
     if articles:
         for i, article in enumerate(articles, 1):
