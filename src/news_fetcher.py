@@ -9,6 +9,12 @@ from urllib.parse import quote_plus
 import feedparser
 import requests
 
+try:
+    from googlenewsdecoder import new_decoderv1
+    HAS_GNEWS_DECODER = True
+except ImportError:
+    HAS_GNEWS_DECODER = False
+
 
 class NewsFetcher:
     """Fetches and ranks trending news articles from Google News RSS."""
@@ -184,6 +190,27 @@ class NewsFetcher:
         except Exception:
             return url  # Fallback to original URL
     
+    def _decode_google_news_url(self, url: str) -> Optional[str]:
+        """
+        Decode a Google News URL to get the actual article URL.
+        
+        Args:
+            url: Google News URL
+            
+        Returns:
+            Actual article URL or None if decoding fails
+        """
+        if not HAS_GNEWS_DECODER:
+            return None
+        
+        try:
+            result = new_decoderv1(url)
+            if result and result.get('status'):
+                return result.get('decoded_url')
+            return None
+        except Exception:
+            return None
+    
     def _fetch_article_image(self, url: str) -> Optional[str]:
         """
         Fetch the og:image meta tag from an article page.
@@ -195,19 +222,16 @@ class NewsFetcher:
             Image URL or None if not found
         """
         try:
-            # Skip Google News URLs - they use JavaScript redirects that we can't follow,
-            # and fetching them returns Google's og:image instead of the article's image
+            # Decode Google News URLs to get actual article URL
             if 'news.google.com' in url:
-                return None
+                decoded_url = self._decode_google_news_url(url)
+                if decoded_url:
+                    url = decoded_url
+                else:
+                    # Can't decode, skip image
+                    return None
             
-            # Resolve any redirect URLs to get actual article URL
-            resolved_url = self._resolve_redirect_url(url)
-            
-            # Skip if still a Google News URL after resolution
-            if 'news.google.com' in resolved_url:
-                return None
-            
-            response = self.session.get(resolved_url, timeout=5, allow_redirects=True)
+            response = self.session.get(url, timeout=5, allow_redirects=True)
             if response.status_code != 200:
                 return None
             
