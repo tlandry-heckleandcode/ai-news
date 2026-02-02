@@ -240,13 +240,21 @@ class NewsFetcher:
             og_pattern = r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']'
             og_match = re.search(og_pattern, response.text, re.IGNORECASE)
             if og_match:
-                return og_match.group(1)
+                image_url = og_match.group(1)
+                # Strip query parameters - some sites use ?auto=webp which breaks in Slack
+                if '?' in image_url:
+                    image_url = image_url.split('?')[0]
+                return image_url
             
             # Try alternate format: content before property
             og_pattern_alt = r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']'
             og_match_alt = re.search(og_pattern_alt, response.text, re.IGNORECASE)
             if og_match_alt:
-                return og_match_alt.group(1)
+                image_url = og_match_alt.group(1)
+                # Strip query parameters
+                if '?' in image_url:
+                    image_url = image_url.split('?')[0]
+                return image_url
             
             return None
             
