@@ -7,6 +7,8 @@ from datetime import datetime
 from typing import Optional
 import requests
 
+from categorizer import get_category_emoji
+
 
 class SlackReporter:
     """Sends formatted reports to Slack via incoming webhooks."""
@@ -66,6 +68,18 @@ class SlackReporter:
             return url
         return ""
     
+    def _format_time_ago(self, hours_ago: int) -> str:
+        """Format hours into human-readable time string."""
+        if hours_ago < 1:
+            return "Just now"
+        elif hours_ago < 24:
+            return f"{hours_ago} hours ago"
+        elif hours_ago < 48:
+            return "1 day ago"
+        else:
+            days = hours_ago // 24
+            return f"{days} days ago"
+    
     def format_video(self, video: dict, index: int) -> str:
         """Format a single video for display."""
         stats = video.get("stats", {})
@@ -102,6 +116,7 @@ class SlackReporter:
     def format_article(self, article: dict, index: int) -> str:
         """Format a single article for display."""
         hours_ago = article.get("hours_ago", 0)
+        category = article.get("category", "")
         
         # Sanitize external input
         title = self._escape_mrkdwn(article.get('title', ''), max_length=200)
@@ -109,19 +124,13 @@ class SlackReporter:
         summary = self._escape_mrkdwn(article.get('summary', ''), max_length=500)
         url = self._safe_url(article.get('url', ''))
         
-        # Time description
-        if hours_ago < 1:
-            time_str = "Just now"
-        elif hours_ago < 24:
-            time_str = f"{hours_ago} hours ago"
-        elif hours_ago < 48:
-            time_str = "1 day ago"
-        else:
-            days = hours_ago // 24
-            time_str = f"{days} days ago"
+        time_str = self._format_time_ago(hours_ago)
+        
+        # Category tag
+        cat_tag = f"[{category}] " if category else ""
         
         # Build output with safe values
-        lines = [f"*{index}. {title}*"]
+        lines = [f"*{index}. {cat_tag}{title}*"]
         if summary:
             lines.append(f"   _{summary}_")
         lines.append(f"   Source: {source}")
@@ -131,10 +140,64 @@ class SlackReporter:
         
         return "\n".join(lines)
     
+    def format_release(self, release: dict, index: int) -> str:
+        """Format a single GitHub release for display."""
+        hours_ago = release.get("hours_ago", 0)
+        
+        # Sanitize external input
+        repo = self._escape_mrkdwn(release.get('repo', ''), max_length=100)
+        name = self._escape_mrkdwn(release.get('name', ''), max_length=200)
+        tag = self._escape_mrkdwn(release.get('tag', ''), max_length=50)
+        body = self._escape_mrkdwn(release.get('body', ''), max_length=300)
+        url = self._safe_url(release.get('url', ''))
+        
+        time_str = self._format_time_ago(hours_ago)
+        prerelease = " (pre-release)" if release.get("prerelease") else ""
+        
+        # Build output
+        lines = [f"*{index}. {repo} - {name}*{prerelease}"]
+        lines.append(f"   Tag: `{tag}` | Released: {time_str}")
+        if body:
+            # Show first 200 chars of release notes
+            lines.append(f"   _{body[:200]}{'...' if len(body) > 200 else ''}_")
+        if url:
+            lines.append(f"   <{url}|View Release>")
+        
+        return "\n".join(lines)
+    
+    def format_community_post(self, post: dict, index: int) -> str:
+        """Format a single community post (HN/Reddit) for display."""
+        hours_ago = post.get("hours_ago", 0)
+        category = post.get("category", "DISCUSSION")
+        
+        # Sanitize external input
+        title = self._escape_mrkdwn(post.get('title', ''), max_length=200)
+        source = self._escape_mrkdwn(post.get('source', ''), max_length=50)
+        url = self._safe_url(post.get('url', '') or post.get('hn_url', ''))
+        
+        time_str = self._format_time_ago(hours_ago)
+        
+        # Score display (points for HN, score for Reddit)
+        score = post.get("points", 0) or post.get("score", 0)
+        comments = post.get("comments", 0)
+        
+        # Category emoji
+        cat_emoji = get_category_emoji(category)
+        
+        # Build output
+        lines = [f"*{index}. {cat_emoji} [{category}] {title}*"]
+        lines.append(f"   {source} | {score} pts | {comments} comments | {time_str}")
+        if url:
+            lines.append(f"   <{url}|View Discussion>")
+        
+        return "\n".join(lines)
+    
     def build_report(
         self,
-        videos: list[dict],
-        articles: list[dict],
+        videos: list[dict] = None,
+        articles: list[dict] = None,
+        releases: list[dict] = None,
+        community: list[dict] = None,
         report_time: Optional[datetime] = None
     ) -> dict:
         """
@@ -143,11 +206,18 @@ class SlackReporter:
         Args:
             videos: List of trending videos
             articles: List of trending articles
+            releases: List of GitHub releases
+            community: List of community posts (HN/Reddit)
             report_time: Report generation time
             
         Returns:
             Slack message payload dictionary
         """
+        videos = videos or []
+        articles = articles or []
+        releases = releases or []
+        community = community or []
+        
         if report_time is None:
             report_time = datetime.now()
         
@@ -173,6 +243,27 @@ class SlackReporter:
             {"type": "divider"}
         ]
         
+        # GitHub Releases Section (if any)
+        if releases:
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "*:rocket: RELEASES*"
+                }
+            })
+            
+            for i, release in enumerate(releases, 1):
+                blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": self.format_release(release, i)
+                    }
+                })
+            
+            blocks.append({"type": "divider"})
+        
         # YouTube Videos Section
         blocks.append({
             "type": "section",
@@ -194,7 +285,6 @@ class SlackReporter:
                 # Add thumbnail if available (validate URL)
                 thumbnail = self._safe_url(video.get("thumbnail", ""))
                 if thumbnail:
-                    # Alt text is plain text, just truncate (no mrkdwn escaping needed)
                     alt_text = video.get("title", "Video thumbnail")[:75]
                     section["accessory"] = {
                         "type": "image",
@@ -234,7 +324,6 @@ class SlackReporter:
                 # Add thumbnail if available (validate URL)
                 thumbnail = self._safe_url(article.get("thumbnail", ""))
                 if thumbnail:
-                    # Alt text is plain text, just truncate (no mrkdwn escaping needed)
                     alt_text = article.get("title", "Article thumbnail")[:75]
                     section["accessory"] = {
                         "type": "image",
@@ -253,6 +342,27 @@ class SlackReporter:
         
         blocks.append({"type": "divider"})
         
+        # Community Section (HN + Reddit)
+        if community:
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "*:speech_balloon: COMMUNITY (Hacker News + Reddit)*"
+                }
+            })
+            
+            for i, post in enumerate(community, 1):
+                blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": self.format_community_post(post, i)
+                    }
+                })
+            
+            blocks.append({"type": "divider"})
+        
         # Footer
         blocks.append({
             "type": "context",
@@ -268,8 +378,10 @@ class SlackReporter:
     
     def send_report(
         self,
-        videos: list[dict],
-        articles: list[dict],
+        videos: list[dict] = None,
+        articles: list[dict] = None,
+        releases: list[dict] = None,
+        community: list[dict] = None,
         report_time: Optional[datetime] = None
     ) -> bool:
         """
@@ -278,12 +390,14 @@ class SlackReporter:
         Args:
             videos: List of trending videos
             articles: List of trending articles
+            releases: List of GitHub releases
+            community: List of community posts (HN/Reddit)
             report_time: Report generation time
             
         Returns:
             True if successful, False otherwise
         """
-        payload = self.build_report(videos, articles, report_time)
+        payload = self.build_report(videos, articles, releases, community, report_time)
         
         try:
             response = requests.post(
@@ -350,15 +464,8 @@ def main():
             "channel": "Tech Channel",
             "url": "https://youtube.com/watch?v=example1",
             "stats": {"views": 50000, "likes": 2500, "comments": 300},
-            "days_ago": 2
+            "days_ago": 0
         },
-        {
-            "title": "Claude Code vs GitHub Copilot",
-            "channel": "Developer Weekly",
-            "url": "https://youtube.com/watch?v=example2",
-            "stats": {"views": 35000, "likes": 1800, "comments": 200},
-            "days_ago": 3
-        }
     ]
     
     sample_articles = [
@@ -366,25 +473,39 @@ def main():
             "title": "Cursor AI Raises $100M in Series B",
             "source": "TechCrunch",
             "url": "https://techcrunch.com/example",
-            "hours_ago": 12
+            "hours_ago": 12,
+            "category": "NEWS"
         },
+    ]
+    
+    sample_releases = [
         {
-            "title": "Google Announces New AI Coding Assistant",
-            "source": "The Verge",
-            "url": "https://theverge.com/example",
-            "hours_ago": 36
+            "repo": "getcursor/cursor",
+            "name": "Cursor v0.45.0",
+            "tag": "v0.45.0",
+            "body": "New multi-file editing support and improved performance.",
+            "url": "https://github.com/getcursor/cursor/releases/tag/v0.45.0",
+            "hours_ago": 6
+        }
+    ]
+    
+    sample_community = [
+        {
+            "title": "How I use Claude Code for large refactors",
+            "source": "Hacker News",
+            "url": "https://news.ycombinator.com/item?id=12345",
+            "points": 142,
+            "comments": 45,
+            "hours_ago": 8,
+            "category": "WORKFLOW"
         }
     ]
     
     reporter = SlackReporter()
     
-    # Send test message first
-    print("Sending test message...")
-    reporter.send_test_message()
-    
-    # Then send sample report
-    print("\nSending sample report...")
-    reporter.send_report(sample_videos, sample_articles)
+    # Send sample report
+    print("Sending sample report...")
+    reporter.send_report(sample_videos, sample_articles, sample_releases, sample_community)
 
 
 if __name__ == "__main__":

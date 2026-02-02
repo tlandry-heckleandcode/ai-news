@@ -2,7 +2,8 @@
 """
 AI Trends Reporter - Main orchestration script.
 
-Fetches trending YouTube videos and news articles about AI coding tools,
+Fetches trending YouTube videos, news articles, GitHub releases,
+and community posts (Hacker News, Reddit) about AI coding tools,
 then sends a formatted report to Slack.
 
 Usage:
@@ -59,7 +60,12 @@ def get_config() -> dict:
         "search_terms": get_search_terms(),
         "max_results_per_term": int(os.getenv("MAX_RESULTS_PER_TERM", "10")),
         "days_lookback": int(os.getenv("DAYS_LOOKBACK", "1")),
-        "top_n": 3,
+        # Result limits per source
+        "top_videos": int(os.getenv("TOP_VIDEOS", "5")),
+        "top_articles": int(os.getenv("TOP_ARTICLES", "5")),
+        "top_releases": int(os.getenv("TOP_RELEASES", "3")),
+        "top_hn": int(os.getenv("TOP_HN", "3")),
+        "top_reddit": int(os.getenv("TOP_REDDIT", "3")),
     }
 
 
@@ -73,7 +79,7 @@ def fetch_videos(config: dict) -> list[dict]:
             search_terms=config["search_terms"],
             days_back=config["days_lookback"],
             max_results_per_term=config["max_results_per_term"],
-            top_n=config["top_n"]
+            top_n=config["top_videos"]
         )
         print(f"Found {len(videos)} trending videos")
         return videos
@@ -88,6 +94,7 @@ def fetch_videos(config: dict) -> list[dict]:
 def fetch_articles(config: dict) -> list[dict]:
     """Fetch trending news articles."""
     from news_fetcher import NewsFetcher
+    from categorizer import categorize_items
     
     try:
         fetcher = NewsFetcher()
@@ -95,8 +102,10 @@ def fetch_articles(config: dict) -> list[dict]:
             search_terms=config["search_terms"],
             days_back=config["days_lookback"],
             max_results_per_term=config["max_results_per_term"],
-            top_n=config["top_n"]
+            top_n=config["top_articles"]
         )
+        # Add categories
+        articles = categorize_items(articles)
         print(f"Found {len(articles)} trending articles")
         return articles
     except Exception as e:
@@ -104,13 +113,99 @@ def fetch_articles(config: dict) -> list[dict]:
         return []
 
 
-def send_report(videos: list[dict], articles: list[dict]) -> bool:
+def fetch_releases(config: dict) -> list[dict]:
+    """Fetch GitHub releases."""
+    from github_fetcher import GitHubFetcher
+    
+    try:
+        fetcher = GitHubFetcher()
+        releases = fetcher.fetch_all_releases(
+            days_back=config["days_lookback"] + 6,  # Look back a week for releases
+            top_n=config["top_releases"]
+        )
+        print(f"Found {len(releases)} recent releases")
+        return releases
+    except Exception as e:
+        print(f"Error fetching releases: {e}")
+        return []
+
+
+def fetch_hackernews(config: dict) -> list[dict]:
+    """Fetch Hacker News posts."""
+    from hackernews_fetcher import HackerNewsFetcher
+    from categorizer import categorize_items
+    
+    try:
+        fetcher = HackerNewsFetcher()
+        stories = fetcher.fetch_trending_stories(
+            days_back=config["days_lookback"],
+            top_n=config["top_hn"]
+        )
+        # Add categories
+        stories = categorize_items(stories)
+        print(f"Found {len(stories)} trending HN stories")
+        return stories
+    except Exception as e:
+        print(f"Error fetching HN stories: {e}")
+        return []
+
+
+def fetch_reddit(config: dict) -> list[dict]:
+    """Fetch Reddit posts."""
+    from reddit_fetcher import RedditFetcher
+    from categorizer import categorize_items
+    
+    try:
+        fetcher = RedditFetcher()
+        posts = fetcher.fetch_trending_posts(
+            days_back=config["days_lookback"],
+            top_n=config["top_reddit"]
+        )
+        # Add categories
+        posts = categorize_items(posts)
+        print(f"Found {len(posts)} trending Reddit posts")
+        return posts
+    except Exception as e:
+        print(f"Error fetching Reddit posts: {e}")
+        return []
+
+
+def combine_community_posts(hn_stories: list[dict], reddit_posts: list[dict], top_n: int = 6) -> list[dict]:
+    """Combine and deduplicate community posts from HN and Reddit."""
+    from deduplicator import deduplicate_items
+    
+    # Combine all posts
+    all_posts = hn_stories + reddit_posts
+    
+    # Normalize score key
+    for post in all_posts:
+        post["score"] = post.get("points", 0) or post.get("score", 0)
+    
+    # Deduplicate
+    deduped = deduplicate_items(all_posts, threshold=0.8, score_key="score")
+    
+    # Sort by score and limit
+    deduped.sort(key=lambda x: x.get("score", 0), reverse=True)
+    return deduped[:top_n]
+
+
+def send_report(
+    videos: list[dict],
+    articles: list[dict],
+    releases: list[dict],
+    community: list[dict]
+) -> bool:
     """Send report to Slack."""
     from slack_reporter import SlackReporter
     
     try:
         reporter = SlackReporter()
-        return reporter.send_report(videos, articles)
+        return reporter.send_report(
+            videos=videos,
+            articles=articles,
+            releases=releases,
+            community=community
+        )
     except ValueError as e:
         print(f"Slack configuration error: {e}")
         return False
@@ -131,13 +226,28 @@ def send_test_message() -> bool:
         return False
 
 
-def print_results(videos: list[dict], articles: list[dict]):
+def print_results(
+    videos: list[dict],
+    articles: list[dict],
+    releases: list[dict],
+    community: list[dict]
+):
     """Print results to console."""
     print("\n" + "=" * 60)
     print("AI TRENDS REPORT")
     print("=" * 60)
     
-    print("\nTRENDING YOUTUBE VIDEOS (Last 24 Hours)")
+    # Releases
+    if releases:
+        print("\n:rocket: RELEASES")
+        print("-" * 40)
+        for i, release in enumerate(releases, 1):
+            print(f"\n{i}. {release['repo']} - {release['name']}")
+            print(f"   Tag: {release['tag']} | {release.get('hours_ago', 0)} hours ago")
+            print(f"   URL: {release['url']}")
+    
+    # Videos
+    print("\n:tv: TRENDING YOUTUBE VIDEOS (Last 24 Hours)")
     print("-" * 40)
     if videos:
         for i, video in enumerate(videos, 1):
@@ -149,16 +259,30 @@ def print_results(videos: list[dict], articles: list[dict]):
     else:
         print("No trending videos found.")
     
-    print("\n\nTRENDING ARTICLES (Last 24 Hours)")
+    # Articles
+    print("\n\n:newspaper: TRENDING ARTICLES (Last 24 Hours)")
     print("-" * 40)
     if articles:
         for i, article in enumerate(articles, 1):
-            print(f"\n{i}. {article['title']}")
+            category = article.get('category', '')
+            cat_str = f"[{category}] " if category else ""
+            print(f"\n{i}. {cat_str}{article['title']}")
             print(f"   Source: {article['source']}")
             print(f"   Published: {article.get('hours_ago', 0)} hours ago")
             print(f"   URL: {article['url']}")
     else:
         print("No trending articles found.")
+    
+    # Community
+    if community:
+        print("\n\n:speech_balloon: COMMUNITY (Hacker News + Reddit)")
+        print("-" * 40)
+        for i, post in enumerate(community, 1):
+            category = post.get('category', 'DISCUSSION')
+            score = post.get('points', 0) or post.get('score', 0)
+            print(f"\n{i}. [{category}] {post['title']}")
+            print(f"   {post.get('source', '')} | {score} pts | {post.get('comments', 0)} comments")
+            print(f"   URL: {post.get('url', '')}")
     
     print("\n" + "=" * 60)
 
@@ -188,6 +312,16 @@ def main():
         action="store_true",
         help="Only fetch articles"
     )
+    parser.add_argument(
+        "--no-releases",
+        action="store_true",
+        help="Skip fetching GitHub releases"
+    )
+    parser.add_argument(
+        "--no-community",
+        action="store_true",
+        help="Skip fetching community posts (HN/Reddit)"
+    )
     
     args = parser.parse_args()
     
@@ -205,37 +339,61 @@ def main():
     config = get_config()
     print(f"Search terms: {', '.join(config['search_terms'])}")
     print(f"Looking back: {config['days_lookback']} days")
+    print(f"Limits: {config['top_videos']} videos, {config['top_articles']} articles, "
+          f"{config['top_releases']} releases, {config['top_hn']} HN, {config['top_reddit']} Reddit")
     
     # Determine what to fetch
-    fetch_videos_flag = not args.articles or args.videos
-    fetch_articles_flag = not args.videos or args.articles
+    fetch_only_videos = args.videos and not args.articles
+    fetch_only_articles = args.articles and not args.videos
     
     # Fetch data
     videos = []
     articles = []
+    releases = []
+    community = []
     
-    if fetch_videos_flag:
+    # GitHub Releases
+    if not args.no_releases and not fetch_only_videos and not fetch_only_articles:
+        print("\nFetching GitHub releases...")
+        releases = fetch_releases(config)
+    
+    # YouTube Videos
+    if not fetch_only_articles:
         print("\nFetching YouTube videos...")
         videos = fetch_videos(config)
     
-    if fetch_articles_flag:
+    # News Articles
+    if not fetch_only_videos:
         print("\nFetching news articles...")
         articles = fetch_articles(config)
     
+    # Community (HN + Reddit)
+    if not args.no_community and not fetch_only_videos and not fetch_only_articles:
+        print("\nFetching Hacker News stories...")
+        hn_stories = fetch_hackernews(config)
+        
+        print("\nFetching Reddit posts...")
+        reddit_posts = fetch_reddit(config)
+        
+        # Combine and deduplicate community posts
+        total_community = config["top_hn"] + config["top_reddit"]
+        community = combine_community_posts(hn_stories, reddit_posts, top_n=total_community)
+        print(f"Combined {len(community)} unique community posts")
+    
     # Output results
     if args.dry_run:
-        print_results(videos, articles)
+        print_results(videos, articles, releases, community)
         print("\n[Dry run - report not sent to Slack]")
     else:
         print("\nSending report to Slack...")
-        success = send_report(videos, articles)
+        success = send_report(videos, articles, releases, community)
         
         if success:
             print("\nReport sent successfully!")
         else:
             print("\nFailed to send report to Slack.")
             # Still print results to console as backup
-            print_results(videos, articles)
+            print_results(videos, articles, releases, community)
             sys.exit(1)
     
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Done!")
