@@ -3,7 +3,7 @@
 AI Trends Reporter - Main orchestration script.
 
 Fetches trending YouTube videos, news articles, GitHub releases,
-and community posts (Hacker News, Reddit) about AI coding tools,
+and official blog posts about AI coding tools,
 then sends a formatted report to Slack.
 
 Usage:
@@ -60,12 +60,13 @@ def get_config() -> dict:
         "search_terms": get_search_terms(),
         "max_results_per_term": int(os.getenv("MAX_RESULTS_PER_TERM", "10")),
         "days_lookback": int(os.getenv("DAYS_LOOKBACK", "1")),
-        # Result limits per source
+        # Result limits per source (display limits)
         "top_videos": int(os.getenv("TOP_VIDEOS", "5")),
-        "top_articles": int(os.getenv("TOP_ARTICLES", "5")),
+        "top_articles": int(os.getenv("TOP_ARTICLES", "3")),
         "top_releases": int(os.getenv("TOP_RELEASES", "3")),
-        "top_hn": int(os.getenv("TOP_HN", "3")),
-        "top_reddit": int(os.getenv("TOP_REDDIT", "3")),
+        "top_blogs": int(os.getenv("TOP_BLOGS", "3")),
+        # Fetch pool size (fetch more, then filter down to display limits)
+        "fetch_pool_size": int(os.getenv("FETCH_POOL_SIZE", "10")),
     }
 
 
@@ -91,10 +92,18 @@ def fetch_videos(config: dict) -> list[dict]:
         return []
 
 
-def fetch_articles(config: dict) -> list[dict]:
-    """Fetch trending news articles."""
+def fetch_articles(config: dict, use_pool_size: bool = True) -> list[dict]:
+    """Fetch trending news articles.
+    
+    Args:
+        config: Configuration dictionary
+        use_pool_size: If True, fetch pool_size items for filtering. If False, fetch top_articles.
+    """
     from news_fetcher import NewsFetcher
     from categorizer import categorize_items
+    
+    # Fetch more items if we'll be filtering them down
+    fetch_limit = config["fetch_pool_size"] if use_pool_size else config["top_articles"]
     
     try:
         fetcher = NewsFetcher()
@@ -102,7 +111,7 @@ def fetch_articles(config: dict) -> list[dict]:
             search_terms=config["search_terms"],
             days_back=config["days_lookback"],
             max_results_per_term=config["max_results_per_term"],
-            top_n=config["top_articles"]
+            top_n=fetch_limit
         )
         # Add categories
         articles = categorize_items(articles)
@@ -120,7 +129,7 @@ def fetch_releases(config: dict) -> list[dict]:
     try:
         fetcher = GitHubFetcher()
         releases = fetcher.fetch_all_releases(
-            days_back=config["days_lookback"] + 6,  # Look back a week for releases
+            days_back=config["days_lookback"],
             top_n=config["top_releases"]
         )
         print(f"Found {len(releases)} recent releases")
@@ -130,70 +139,65 @@ def fetch_releases(config: dict) -> list[dict]:
         return []
 
 
-def fetch_hackernews(config: dict) -> list[dict]:
-    """Fetch Hacker News posts."""
-    from hackernews_fetcher import HackerNewsFetcher
+def fetch_blogs(config: dict, use_pool_size: bool = True) -> list[dict]:
+    """Fetch official blog posts.
+    
+    Args:
+        config: Configuration dictionary
+        use_pool_size: If True, fetch pool_size items for filtering. If False, fetch top_blogs.
+    """
+    from blog_fetcher import BlogFetcher
     from categorizer import categorize_items
     
-    try:
-        fetcher = HackerNewsFetcher()
-        stories = fetcher.fetch_trending_stories(
-            days_back=config["days_lookback"],
-            top_n=config["top_hn"]
-        )
-        # Add categories
-        stories = categorize_items(stories)
-        print(f"Found {len(stories)} trending HN stories")
-        return stories
-    except Exception as e:
-        print(f"Error fetching HN stories: {e}")
-        return []
-
-
-def fetch_reddit(config: dict) -> list[dict]:
-    """Fetch Reddit posts."""
-    from reddit_fetcher import RedditFetcher
-    from categorizer import categorize_items
+    # Fetch more items if we'll be filtering them down
+    fetch_limit = config["fetch_pool_size"] if use_pool_size else config["top_blogs"]
     
     try:
-        fetcher = RedditFetcher()
-        posts = fetcher.fetch_trending_posts(
+        fetcher = BlogFetcher()
+        posts = fetcher.fetch_all_blog_posts(
             days_back=config["days_lookback"],
-            top_n=config["top_reddit"]
+            top_n=fetch_limit
         )
         # Add categories
         posts = categorize_items(posts)
-        print(f"Found {len(posts)} trending Reddit posts")
+        print(f"Found {len(posts)} official blog posts")
         return posts
     except Exception as e:
-        print(f"Error fetching Reddit posts: {e}")
+        print(f"Error fetching blog posts: {e}")
         return []
 
 
-def combine_community_posts(hn_stories: list[dict], reddit_posts: list[dict], top_n: int = 6) -> list[dict]:
-    """Combine and deduplicate community posts from HN and Reddit."""
-    from deduplicator import deduplicate_items
+def apply_relevance_filter(
+    articles: list[dict],
+    blogs: list[dict],
+    top_articles: int = 3,
+    top_blogs: int = 3
+) -> tuple[list[dict], list[dict]]:
+    """Apply LLM relevance filtering to articles and blogs, then truncate to display limits."""
+    from relevance_filter import filter_by_relevance, is_filtering_enabled
     
-    # Combine all posts
-    all_posts = hn_stories + reddit_posts
+    if not is_filtering_enabled():
+        print("LLM filtering disabled")
+        # Still truncate to display limits
+        return articles[:top_articles], blogs[:top_blogs]
     
-    # Normalize score key
-    for post in all_posts:
-        post["score"] = post.get("points", 0) or post.get("score", 0)
+    print("\nApplying LLM relevance filtering...")
     
-    # Deduplicate
-    deduped = deduplicate_items(all_posts, threshold=0.8, score_key="score")
+    filtered_articles = filter_by_relevance(articles, "news articles")
+    filtered_blogs = filter_by_relevance(blogs, "blog posts")
     
-    # Sort by score and limit
-    deduped.sort(key=lambda x: x.get("score", 0), reverse=True)
-    return deduped[:top_n]
+    # Truncate to display limits
+    filtered_articles = filtered_articles[:top_articles]
+    filtered_blogs = filtered_blogs[:top_blogs]
+    
+    return filtered_articles, filtered_blogs
 
 
 def send_report(
     videos: list[dict],
     articles: list[dict],
     releases: list[dict],
-    community: list[dict]
+    blogs: list[dict]
 ) -> bool:
     """Send report to Slack."""
     from slack_reporter import SlackReporter
@@ -204,7 +208,7 @@ def send_report(
             videos=videos,
             articles=articles,
             releases=releases,
-            community=community
+            blogs=blogs
         )
     except ValueError as e:
         print(f"Slack configuration error: {e}")
@@ -230,7 +234,7 @@ def print_results(
     videos: list[dict],
     articles: list[dict],
     releases: list[dict],
-    community: list[dict]
+    blogs: list[dict]
 ):
     """Print results to console."""
     print("\n" + "=" * 60)
@@ -239,7 +243,7 @@ def print_results(
     
     # Releases
     if releases:
-        print("\n:rocket: RELEASES")
+        print("\nRELEASES")
         print("-" * 40)
         for i, release in enumerate(releases, 1):
             print(f"\n{i}. {release['repo']} - {release['name']}")
@@ -247,20 +251,22 @@ def print_results(
             print(f"   URL: {release['url']}")
     
     # Videos
-    print("\n:tv: TRENDING YOUTUBE VIDEOS (Last 24 Hours)")
+    print("\nTRENDING YOUTUBE VIDEOS")
     print("-" * 40)
     if videos:
         for i, video in enumerate(videos, 1):
             stats = video.get("stats", {})
+            duration = stats.get("duration", "")
+            duration_str = f" | Duration: {duration}" if duration else ""
             print(f"\n{i}. {video['title']}")
             print(f"   Channel: {video['channel']}")
-            print(f"   Views: {stats.get('views', 0):,} | {video.get('days_ago', 0)} days ago")
+            print(f"   Views: {stats.get('views', 0):,}{duration_str} | {video.get('days_ago', 0)} days ago")
             print(f"   URL: {video['url']}")
     else:
         print("No trending videos found.")
     
     # Articles
-    print("\n\n:newspaper: TRENDING ARTICLES (Last 24 Hours)")
+    print("\n\nTRENDING ARTICLES")
     print("-" * 40)
     if articles:
         for i, article in enumerate(articles, 1):
@@ -273,15 +279,16 @@ def print_results(
     else:
         print("No trending articles found.")
     
-    # Community
-    if community:
-        print("\n\n:speech_balloon: COMMUNITY (Hacker News + Reddit)")
+    # Official Blogs
+    if blogs:
+        print("\n\nOFFICIAL BLOGS")
         print("-" * 40)
-        for i, post in enumerate(community, 1):
-            category = post.get('category', 'DISCUSSION')
-            score = post.get('points', 0) or post.get('score', 0)
-            print(f"\n{i}. [{category}] {post['title']}")
-            print(f"   {post.get('source', '')} | {score} pts | {post.get('comments', 0)} comments")
+        for i, post in enumerate(blogs, 1):
+            category = post.get('category', '')
+            cat_str = f"[{category}] " if category else ""
+            print(f"\n{i}. {cat_str}{post['title']}")
+            print(f"   Source: {post.get('source', '')}")
+            print(f"   Published: {post.get('hours_ago', 0)} hours ago")
             print(f"   URL: {post.get('url', '')}")
     
     print("\n" + "=" * 60)
@@ -318,9 +325,14 @@ def main():
         help="Skip fetching GitHub releases"
     )
     parser.add_argument(
-        "--no-community",
+        "--no-blogs",
         action="store_true",
-        help="Skip fetching community posts (HN/Reddit)"
+        help="Skip fetching official blog posts"
+    )
+    parser.add_argument(
+        "--no-filter",
+        action="store_true",
+        help="Skip LLM relevance filtering"
     )
     
     args = parser.parse_args()
@@ -328,6 +340,10 @@ def main():
     # Load environment
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting AI Trends Reporter...")
     load_environment()
+    
+    # Override LLM filter if --no-filter flag
+    if args.no_filter:
+        os.environ["LLM_FILTER_ENABLED"] = "false"
     
     # Test mode
     if args.test:
@@ -339,8 +355,14 @@ def main():
     config = get_config()
     print(f"Search terms: {', '.join(config['search_terms'])}")
     print(f"Looking back: {config['days_lookback']} days")
-    print(f"Limits: {config['top_videos']} videos, {config['top_articles']} articles, "
-          f"{config['top_releases']} releases, {config['top_hn']} HN, {config['top_reddit']} Reddit")
+    print(f"Display limits: {config['top_videos']} videos, {config['top_articles']} articles, "
+          f"{config['top_releases']} releases, {config['top_blogs']} blogs")
+    
+    # Determine if we should use pool size (fetch more for filtering)
+    from relevance_filter import is_filtering_enabled
+    use_pool_size = is_filtering_enabled() and not args.no_filter
+    if use_pool_size:
+        print(f"Fetch pool size: {config['fetch_pool_size']} (for LLM filtering)")
     
     # Determine what to fetch
     fetch_only_videos = args.videos and not args.articles
@@ -350,7 +372,7 @@ def main():
     videos = []
     articles = []
     releases = []
-    community = []
+    blogs = []
     
     # GitHub Releases
     if not args.no_releases and not fetch_only_videos and not fetch_only_articles:
@@ -365,35 +387,36 @@ def main():
     # News Articles
     if not fetch_only_videos:
         print("\nFetching news articles...")
-        articles = fetch_articles(config)
+        articles = fetch_articles(config, use_pool_size=use_pool_size)
     
-    # Community (HN + Reddit)
-    if not args.no_community and not fetch_only_videos and not fetch_only_articles:
-        print("\nFetching Hacker News stories...")
-        hn_stories = fetch_hackernews(config)
-        
-        print("\nFetching Reddit posts...")
-        reddit_posts = fetch_reddit(config)
-        
-        # Combine and deduplicate community posts
-        total_community = config["top_hn"] + config["top_reddit"]
-        community = combine_community_posts(hn_stories, reddit_posts, top_n=total_community)
-        print(f"Combined {len(community)} unique community posts")
+    # Official Blogs
+    if not args.no_blogs and not fetch_only_videos and not fetch_only_articles:
+        print("\nFetching official blog posts...")
+        blogs = fetch_blogs(config, use_pool_size=use_pool_size)
+    
+    # Apply LLM relevance filtering and truncate to display limits
+    if articles or blogs:
+        articles, blogs = apply_relevance_filter(
+            articles,
+            blogs,
+            top_articles=config["top_articles"],
+            top_blogs=config["top_blogs"]
+        )
     
     # Output results
     if args.dry_run:
-        print_results(videos, articles, releases, community)
+        print_results(videos, articles, releases, blogs)
         print("\n[Dry run - report not sent to Slack]")
     else:
         print("\nSending report to Slack...")
-        success = send_report(videos, articles, releases, community)
+        success = send_report(videos, articles, releases, blogs)
         
         if success:
             print("\nReport sent successfully!")
         else:
             print("\nFailed to send report to Slack.")
             # Still print results to console as backup
-            print_results(videos, articles, releases, community)
+            print_results(videos, articles, releases, blogs)
             sys.exit(1)
     
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Done!")

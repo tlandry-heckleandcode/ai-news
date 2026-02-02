@@ -84,131 +84,212 @@ class SlackReporter:
         if hours_ago < 1:
             return "Just now"
         elif hours_ago < 24:
-            return f"{hours_ago} hours ago"
+            return f"{hours_ago}h ago"
         elif hours_ago < 48:
             return "1 day ago"
         else:
             days = hours_ago // 24
             return f"{days} days ago"
     
-    def format_video(self, video: dict, index: int) -> str:
-        """Format a single video for display."""
+    def _format_days_ago(self, days_ago: int) -> str:
+        """Format days into human-readable time string."""
+        if days_ago == 0:
+            return "Today"
+        elif days_ago == 1:
+            return "Yesterday"
+        else:
+            return f"{days_ago} days ago"
+    
+    def _build_video_blocks(self, video: dict, index: int) -> list[dict]:
+        """Build Slack blocks for a single video."""
         stats = video.get("stats", {})
         views = stats.get("views", 0)
+        duration = stats.get("duration", "")
         days_ago = video.get("days_ago", 0)
         
         # Sanitize external input
         title = self._escape_mrkdwn(video.get('title', ''), max_length=200)
         channel = self._escape_mrkdwn(video.get('channel', ''), max_length=100)
         url = self._safe_url(video.get('url', ''))
+        thumbnail = self._safe_url(video.get("thumbnail", ""))
         
-        # Format views with commas
-        views_str = f"{views:,}"
+        blocks = []
         
-        # Time description
-        if days_ago == 0:
-            time_str = "Today"
-        elif days_ago == 1:
-            time_str = "1 day ago"
-        else:
-            time_str = f"{days_ago} days ago"
+        # Build metadata line
+        time_str = self._format_days_ago(days_ago)
+        meta_parts = [f"{channel}", f"{views:,} views"]
+        if duration:
+            meta_parts.append(duration)
+        meta_parts.append(time_str)
+        meta_line = "  •  ".join(meta_parts)
         
-        # Build output with safe values
-        lines = [
-            f"*{index}. {title}*",
-            f"   Channel: {channel}",
-            f"   Views: {views_str} | Published: {time_str}",
-        ]
+        # Title section with thumbnail - include all info in one block
+        title_text = f"*{index}. {title}*\n{meta_line}"
         if url:
-            lines.append(f"   <{url}|Watch on YouTube>")
+            title_text += f"\n<{url}|:arrow_forward: Watch on YouTube>"
         
-        return "\n".join(lines)
+        section = {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": title_text
+            }
+        }
+        
+        if thumbnail:
+            section["accessory"] = {
+                "type": "image",
+                "image_url": thumbnail,
+                "alt_text": video.get("title", "Video thumbnail")[:75]
+            }
+        
+        blocks.append(section)
+        
+        return blocks
     
-    def format_article(self, article: dict, index: int) -> str:
-        """Format a single article for display."""
+    def _build_article_blocks(self, article: dict, index: int) -> list[dict]:
+        """Build Slack blocks for a single article."""
         hours_ago = article.get("hours_ago", 0)
         category = article.get("category", "")
         
         # Sanitize external input
         title = self._escape_mrkdwn(article.get('title', ''), max_length=200)
         source = self._escape_mrkdwn(article.get('source', ''), max_length=100)
-        summary = self._escape_mrkdwn(article.get('summary', ''), max_length=500)
+        summary = self._escape_mrkdwn(article.get('summary', ''), max_length=400)
         url = self._safe_url(article.get('url', ''))
+        thumbnail = self._safe_url(article.get("thumbnail", ""))
         
-        time_str = self._format_time_ago(hours_ago)
+        blocks = []
         
         # Category tag
         cat_tag = f"[{category}] " if category else ""
         
-        # Build output with safe values
-        lines = [f"*{index}. {cat_tag}{title}*"]
+        # Title section with thumbnail
+        title_text = f"*{index}. {cat_tag}{title}*"
         if summary:
-            lines.append(f"   _{summary}_")
-        lines.append(f"   Source: {source}")
-        lines.append(f"   Published: {time_str}")
+            title_text += f"\n_{summary}_"
         if url:
-            lines.append(f"   <{url}|Read Article>")
+            title_text += f"\n<{url}|:link: Read Article>"
         
-        return "\n".join(lines)
+        section = {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": title_text
+            }
+        }
+        
+        if thumbnail:
+            section["accessory"] = {
+                "type": "image",
+                "image_url": thumbnail,
+                "alt_text": article.get("title", "Article thumbnail")[:75]
+            }
+        
+        blocks.append(section)
+        
+        # Metadata context block
+        time_str = self._format_time_ago(hours_ago)
+        blocks.append({
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn", "text": f":newspaper: {source}"},
+                {"type": "mrkdwn", "text": f":calendar: {time_str}"}
+            ]
+        })
+        
+        return blocks
     
-    def format_release(self, release: dict, index: int) -> str:
-        """Format a single GitHub release for display."""
+    def _build_release_blocks(self, release: dict, index: int) -> list[dict]:
+        """Build Slack blocks for a single GitHub release."""
         hours_ago = release.get("hours_ago", 0)
         
         # Sanitize external input
         repo = self._escape_mrkdwn(release.get('repo', ''), max_length=100)
         name = self._escape_mrkdwn(release.get('name', ''), max_length=200)
         tag = self._escape_mrkdwn(release.get('tag', ''), max_length=50)
-        body = self._escape_mrkdwn(release.get('body', ''), max_length=300)
+        body = self._escape_mrkdwn(release.get('body', ''), max_length=250)
         url = self._safe_url(release.get('url', ''))
         
-        time_str = self._format_time_ago(hours_ago)
-        prerelease = " (pre-release)" if release.get("prerelease") else ""
+        blocks = []
         
-        # Build output
-        lines = [f"*{index}. {repo} - {name}*{prerelease}"]
-        lines.append(f"   Tag: `{tag}` | Released: {time_str}")
+        prerelease = " _(pre-release)_" if release.get("prerelease") else ""
+        
+        # Title section
+        title_text = f"*{index}. {repo}*{prerelease}\n`{tag}` - {name}"
         if body:
-            # Show first 200 chars of release notes
-            lines.append(f"   _{body[:200]}{'...' if len(body) > 200 else ''}_")
+            title_text += f"\n_{body}_"
         if url:
-            lines.append(f"   <{url}|View Release>")
+            title_text += f"\n<{url}|:link: View Release>"
         
-        return "\n".join(lines)
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": title_text
+            }
+        })
+        
+        # Metadata context block
+        time_str = self._format_time_ago(hours_ago)
+        blocks.append({
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn", "text": f":calendar: Released {time_str}"}
+            ]
+        })
+        
+        return blocks
     
-    def format_community_post(self, post: dict, index: int) -> str:
-        """Format a single community post (HN/Reddit) for display."""
+    def _build_blog_blocks(self, post: dict, index: int) -> list[dict]:
+        """Build Slack blocks for a single blog post."""
         hours_ago = post.get("hours_ago", 0)
-        category = post.get("category", "DISCUSSION")
+        category = post.get("category", "")
         
         # Sanitize external input
         title = self._escape_mrkdwn(post.get('title', ''), max_length=200)
-        source = self._escape_mrkdwn(post.get('source', ''), max_length=50)
-        url = self._safe_url(post.get('url', '') or post.get('hn_url', ''))
+        source = self._escape_mrkdwn(post.get('source', ''), max_length=100)
+        summary = self._escape_mrkdwn(post.get('summary', ''), max_length=300)
+        url = self._safe_url(post.get('url', ''))
         
-        time_str = self._format_time_ago(hours_ago)
+        blocks = []
         
-        # Score display (points for HN, score for Reddit)
-        score = post.get("points", 0) or post.get("score", 0)
-        comments = post.get("comments", 0)
+        # Category tag
+        cat_tag = f"[{category}] " if category else ""
         
-        # Category emoji
-        cat_emoji = get_category_emoji(category)
-        
-        # Build output
-        lines = [f"*{index}. {cat_emoji} [{category}] {title}*"]
-        lines.append(f"   {source} | {score} pts | {comments} comments | {time_str}")
+        # Title section
+        title_text = f"*{index}. {cat_tag}{title}*"
+        if summary:
+            title_text += f"\n_{summary}_"
         if url:
-            lines.append(f"   <{url}|View Discussion>")
+            title_text += f"\n<{url}|:link: Read Post>"
         
-        return "\n".join(lines)
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": title_text
+            }
+        })
+        
+        # Metadata context block
+        time_str = self._format_time_ago(hours_ago)
+        blocks.append({
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn", "text": f":office: {source}"},
+                {"type": "mrkdwn", "text": f":calendar: {time_str}"}
+            ]
+        })
+        
+        return blocks
     
     def build_report(
         self,
         videos: list[dict] = None,
         articles: list[dict] = None,
         releases: list[dict] = None,
-        community: list[dict] = None,
+        blogs: list[dict] = None,
         report_time: Optional[datetime] = None
     ) -> dict:
         """
@@ -218,7 +299,7 @@ class SlackReporter:
             videos: List of trending videos
             articles: List of trending articles
             releases: List of GitHub releases
-            community: List of community posts (HN/Reddit)
+            blogs: List of official blog posts
             report_time: Report generation time
             
         Returns:
@@ -227,7 +308,7 @@ class SlackReporter:
         videos = videos or []
         articles = articles or []
         releases = releases or []
-        community = community or []
+        blogs = blogs or []
         
         if report_time is None:
             report_time = datetime.now()
@@ -240,16 +321,18 @@ class SlackReporter:
                 "type": "header",
                 "text": {
                     "type": "plain_text",
-                    "text": f"AI Trends Report - {date_str}",
+                    "text": f":robot_face: AI Trends Report - {date_str}",
                     "emoji": True
                 }
             },
             {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": "Good morning! Here's your daily roundup of trending AI content."
-                }
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": "Good morning! Here's your daily roundup of trending AI content."
+                    }
+                ]
             },
             {"type": "divider"}
         ]
@@ -257,120 +340,78 @@ class SlackReporter:
         # GitHub Releases Section (if any)
         if releases:
             blocks.append({
-                "type": "section",
+                "type": "header",
                 "text": {
-                    "type": "mrkdwn",
-                    "text": "*:rocket: RELEASES*"
+                    "type": "plain_text",
+                    "text": ":rocket: Releases",
+                    "emoji": True
                 }
             })
             
             for i, release in enumerate(releases, 1):
-                blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": self.format_release(release, i)
-                    }
-                })
+                blocks.extend(self._build_release_blocks(release, i))
             
             blocks.append({"type": "divider"})
         
         # YouTube Videos Section
         blocks.append({
-            "type": "section",
+            "type": "header",
             "text": {
-                "type": "mrkdwn",
-                "text": "*:tv: TRENDING YOUTUBE VIDEOS (Last 24 Hours)*"
+                "type": "plain_text",
+                "text": ":tv: YouTube Videos",
+                "emoji": True
             }
         })
         
         if videos:
             for i, video in enumerate(videos, 1):
-                section = {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": self.format_video(video, i)
-                    }
-                }
-                # Add thumbnail if available (validate URL)
-                thumbnail = self._safe_url(video.get("thumbnail", ""))
-                if thumbnail:
-                    alt_text = video.get("title", "Video thumbnail")[:75]
-                    section["accessory"] = {
-                        "type": "image",
-                        "image_url": thumbnail,
-                        "alt_text": alt_text
-                    }
-                blocks.append(section)
+                blocks.extend(self._build_video_blocks(video, i))
         else:
             blocks.append({
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": "_No new trending videos found in the last 24 hours._"
-                }
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": "_No new trending videos found._"}
+                ]
             })
         
         blocks.append({"type": "divider"})
         
         # Articles Section
         blocks.append({
-            "type": "section",
+            "type": "header",
             "text": {
-                "type": "mrkdwn",
-                "text": "*:newspaper: TRENDING ARTICLES (Last 24 Hours)*"
+                "type": "plain_text",
+                "text": ":newspaper: News Articles",
+                "emoji": True
             }
         })
         
         if articles:
             for i, article in enumerate(articles, 1):
-                section = {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": self.format_article(article, i)
-                    }
-                }
-                # Add thumbnail if available (validate URL)
-                thumbnail = self._safe_url(article.get("thumbnail", ""))
-                if thumbnail:
-                    alt_text = article.get("title", "Article thumbnail")[:75]
-                    section["accessory"] = {
-                        "type": "image",
-                        "image_url": thumbnail,
-                        "alt_text": alt_text
-                    }
-                blocks.append(section)
+                blocks.extend(self._build_article_blocks(article, i))
         else:
             blocks.append({
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": "_No new trending articles found in the last 24 hours._"
-                }
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": "_No new trending articles found._"}
+                ]
             })
         
         blocks.append({"type": "divider"})
         
-        # Community Section (HN + Reddit)
-        if community:
+        # Official Blogs Section (if any)
+        if blogs:
             blocks.append({
-                "type": "section",
+                "type": "header",
                 "text": {
-                    "type": "mrkdwn",
-                    "text": "*:speech_balloon: COMMUNITY (Hacker News + Reddit)*"
+                    "type": "plain_text",
+                    "text": ":memo: Official Blogs",
+                    "emoji": True
                 }
             })
             
-            for i, post in enumerate(community, 1):
-                blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": self.format_community_post(post, i)
-                    }
-                })
+            for i, post in enumerate(blogs, 1):
+                blocks.extend(self._build_blog_blocks(post, i))
             
             blocks.append({"type": "divider"})
         
@@ -380,7 +421,7 @@ class SlackReporter:
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": f"Report generated at {time_str} | Search terms: Cursor AI, Claude Code, Google Antigravity AI"
+                    "text": f"Report generated at {time_str} | Sources: YouTube, Google News, Official Blogs"
                 }
             ]
         })
@@ -421,7 +462,7 @@ class SlackReporter:
         videos: list[dict] = None,
         articles: list[dict] = None,
         releases: list[dict] = None,
-        community: list[dict] = None,
+        blogs: list[dict] = None,
         report_time: Optional[datetime] = None
     ) -> bool:
         """
@@ -431,13 +472,13 @@ class SlackReporter:
             videos: List of trending videos
             articles: List of trending articles
             releases: List of GitHub releases
-            community: List of community posts (HN/Reddit)
+            blogs: List of official blog posts
             report_time: Report generation time
             
         Returns:
             True if all sends successful, False if any failed
         """
-        payload = self.build_report(videos, articles, releases, community, report_time)
+        payload = self.build_report(videos, articles, releases, blogs, report_time)
         
         success_count = 0
         for i, webhook_url in enumerate(self.webhook_urls, 1):
@@ -485,7 +526,7 @@ def main():
             "title": "Cursor AI: The Future of Coding",
             "channel": "Tech Channel",
             "url": "https://youtube.com/watch?v=example1",
-            "stats": {"views": 50000, "likes": 2500, "comments": 300},
+            "stats": {"views": 50000, "likes": 2500, "comments": 300, "duration": "12:34"},
             "days_ago": 0
         },
     ]
@@ -511,15 +552,14 @@ def main():
         }
     ]
     
-    sample_community = [
+    sample_blogs = [
         {
-            "title": "How I use Claude Code for large refactors",
-            "source": "Hacker News",
-            "url": "https://news.ycombinator.com/item?id=12345",
-            "points": 142,
-            "comments": 45,
-            "hours_ago": 8,
-            "category": "WORKFLOW"
+            "title": "Introducing Claude 3.5 Sonnet",
+            "source": "Anthropic",
+            "url": "https://anthropic.com/news/example",
+            "summary": "Our most capable model yet, with improved reasoning and coding abilities.",
+            "hours_ago": 24,
+            "category": "RELEASE"
         }
     ]
     
@@ -527,7 +567,7 @@ def main():
     
     # Send sample report
     print("Sending sample report...")
-    reporter.send_report(sample_videos, sample_articles, sample_releases, sample_community)
+    reporter.send_report(sample_videos, sample_articles, sample_releases, sample_blogs)
 
 
 if __name__ == "__main__":

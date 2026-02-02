@@ -4,6 +4,7 @@ YouTube Data API integration for fetching trending AI videos.
 
 import html
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from googleapiclient.discovery import build
@@ -31,6 +32,35 @@ class YouTubeFetcher:
             raise ValueError("YouTube API key is required. Set YOUTUBE_API_KEY environment variable.")
         
         self.youtube = build("youtube", "v3", developerKey=self.api_key)
+    
+    def _parse_duration(self, iso_duration: str) -> str:
+        """
+        Convert ISO 8601 duration (PT4M13S) to readable format (4:13).
+        
+        Args:
+            iso_duration: Duration in ISO 8601 format (e.g., PT1H2M30S, PT4M13S, PT30S)
+            
+        Returns:
+            Formatted duration string (e.g., "1:02:30", "4:13", "0:30")
+        """
+        if not iso_duration:
+            return ""
+        
+        # Parse hours, minutes, seconds from PTxHxMxS format
+        pattern = r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?'
+        match = re.match(pattern, iso_duration)
+        
+        if not match:
+            return ""
+        
+        hours = int(match.group(1) or 0)
+        minutes = int(match.group(2) or 0)
+        seconds = int(match.group(3) or 0)
+        
+        if hours > 0:
+            return f"{hours}:{minutes:02d}:{seconds:02d}"
+        else:
+            return f"{minutes}:{seconds:02d}"
     
     def search_videos(
         self,
@@ -94,13 +124,13 @@ class YouTubeFetcher:
     
     def get_video_statistics(self, video_ids: list[str]) -> dict[str, dict]:
         """
-        Fetch statistics (views, likes, comments) for a list of video IDs.
+        Fetch statistics (views, likes, comments) and duration for a list of video IDs.
         
         Args:
             video_ids: List of YouTube video IDs
             
         Returns:
-            Dictionary mapping video ID to statistics
+            Dictionary mapping video ID to statistics and duration
         """
         if not video_ids:
             return {}
@@ -111,17 +141,24 @@ class YouTubeFetcher:
             for i in range(0, len(video_ids), 50):
                 batch = video_ids[i:i + 50]
                 response = self.youtube.videos().list(
-                    part="statistics",
+                    part="statistics,contentDetails",
                     id=",".join(batch)
                 ).execute()
                 
                 for item in response.get("items", []):
                     video_id = item["id"]
                     statistics = item.get("statistics", {})
+                    content_details = item.get("contentDetails", {})
+                    
+                    # Parse duration from ISO 8601 format
+                    iso_duration = content_details.get("duration", "")
+                    duration = self._parse_duration(iso_duration)
+                    
                     stats[video_id] = {
                         "views": int(statistics.get("viewCount", 0)),
                         "likes": int(statistics.get("likeCount", 0)),
-                        "comments": int(statistics.get("commentCount", 0))
+                        "comments": int(statistics.get("commentCount", 0)),
+                        "duration": duration
                     }
             
             return stats
@@ -248,7 +285,9 @@ def main():
     for i, video in enumerate(videos, 1):
         print(f"{i}. {video['title']}")
         print(f"   Channel: {video['channel']}")
-        print(f"   Views: {video['stats'].get('views', 0):,} | "
+        duration = video['stats'].get('duration', '')
+        duration_str = f" | Duration: {duration}" if duration else ""
+        print(f"   Views: {video['stats'].get('views', 0):,}{duration_str} | "
               f"Published: {video['days_ago']} days ago")
         print(f"   Score: {video['trending_score']:,.0f}")
         print(f"   URL: {video['url']}")
