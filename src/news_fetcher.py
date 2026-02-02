@@ -2,6 +2,7 @@
 Google News RSS fetcher for trending AI articles.
 """
 
+import html
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -160,8 +161,9 @@ class NewsFetcher:
         return title.strip(), "Unknown"
     
     def _clean_html(self, text: str) -> str:
-        """Remove HTML tags from text."""
+        """Remove HTML tags and decode HTML entities from text."""
         clean = re.sub(r'<[^>]+>', '', text)
+        clean = html.unescape(clean)  # Decode &nbsp;, &amp;, etc.
         clean = re.sub(r'\s+', ' ', clean)
         return clean.strip()
     
