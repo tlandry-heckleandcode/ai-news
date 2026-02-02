@@ -94,6 +94,8 @@ class NewsFetcher:
                 
                 # Extract source from title (Google News format: "Title - Source")
                 title, source = self._extract_source(entry.get("title", ""))
+                # Strip any URLs from title
+                title = self._strip_urls(title)
                 
                 article = {
                     "title": title,
@@ -213,16 +215,28 @@ class NewsFetcher:
         except Exception:
             return None
     
-    def _fetch_article_image(self, url: str) -> Optional[str]:
+    def _strip_urls(self, text: str) -> str:
+        """Remove URLs from text."""
+        if not text:
+            return ""
+        # Remove http/https URLs
+        text = re.sub(r'https?://\S+', '', text)
+        # Clean up extra whitespace
+        text = re.sub(r'\s+', ' ', text)
+        return text.strip()
+    
+    def _fetch_article_metadata(self, url: str) -> dict:
         """
-        Fetch the og:image meta tag from an article page.
+        Fetch og:image and og:description meta tags from an article page.
         
         Args:
             url: Article URL (may be a Google News redirect URL)
             
         Returns:
-            Image URL or None if not found
+            Dict with 'image' and 'description' keys (values may be None)
         """
+        result = {"image": None, "description": None}
+        
         try:
             # Decode Google News URLs to get actual article URL
             if 'news.google.com' in url:
@@ -230,39 +244,56 @@ class NewsFetcher:
                 if decoded_url:
                     url = decoded_url
                 else:
-                    # Can't decode, skip image
-                    return None
+                    # Can't decode, skip metadata
+                    return result
             
             response = self.session.get(url, timeout=5, allow_redirects=True)
             if response.status_code != 200:
-                return None
+                return result
             
-            # Look for og:image meta tag
-            # Pattern: <meta property="og:image" content="...">
-            og_pattern = r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']'
-            og_match = re.search(og_pattern, response.text, re.IGNORECASE)
-            if og_match:
-                image_url = og_match.group(1)
+            html_content = response.text
+            
+            # Extract og:image
+            og_image_pattern = r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']'
+            og_image_match = re.search(og_image_pattern, html_content, re.IGNORECASE)
+            if og_image_match:
+                image_url = og_image_match.group(1)
                 # Strip query parameters - some sites use ?auto=webp which breaks in Slack
                 if '?' in image_url:
                     image_url = image_url.split('?')[0]
-                return image_url
+                result["image"] = image_url
+            else:
+                # Try alternate format: content before property
+                og_image_alt = r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']'
+                og_image_match_alt = re.search(og_image_alt, html_content, re.IGNORECASE)
+                if og_image_match_alt:
+                    image_url = og_image_match_alt.group(1)
+                    if '?' in image_url:
+                        image_url = image_url.split('?')[0]
+                    result["image"] = image_url
             
-            # Try alternate format: content before property
-            og_pattern_alt = r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']'
-            og_match_alt = re.search(og_pattern_alt, response.text, re.IGNORECASE)
-            if og_match_alt:
-                image_url = og_match_alt.group(1)
-                # Strip query parameters
-                if '?' in image_url:
-                    image_url = image_url.split('?')[0]
-                return image_url
+            # Extract og:description
+            og_desc_pattern = r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']+)["\']'
+            og_desc_match = re.search(og_desc_pattern, html_content, re.IGNORECASE)
+            if og_desc_match:
+                description = html.unescape(og_desc_match.group(1))
+                # Strip any URLs from description
+                description = self._strip_urls(description)
+                result["description"] = description
+            else:
+                # Try alternate format: content before property
+                og_desc_alt = r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:description["\']'
+                og_desc_match_alt = re.search(og_desc_alt, html_content, re.IGNORECASE)
+                if og_desc_match_alt:
+                    description = html.unescape(og_desc_match_alt.group(1))
+                    description = self._strip_urls(description)
+                    result["description"] = description
             
-            return None
+            return result
             
         except Exception:
-            # Silently fail - thumbnails are optional
-            return None
+            # Silently fail - metadata is optional
+            return result
     
     def calculate_trending_score(
         self,
@@ -359,9 +390,15 @@ class NewsFetcher:
         all_articles.sort(key=lambda a: a["trending_score"], reverse=True)
         top_articles = all_articles[:top_n]
         
-        # Fetch thumbnails for top articles only (to minimize HTTP requests)
+        # Fetch metadata (thumbnail + description) for top articles only
         for article in top_articles:
-            article["thumbnail"] = self._fetch_article_image(article.get("url", ""))
+            metadata = self._fetch_article_metadata(article.get("url", ""))
+            article["thumbnail"] = metadata.get("image")
+            # Use og:description if available, otherwise clear the useless RSS summary
+            if metadata.get("description"):
+                article["summary"] = metadata["description"]
+            else:
+                article["summary"] = ""  # Clear the RSS summary (it's just title + source)
         
         return top_articles
 
