@@ -13,16 +13,27 @@ from categorizer import get_category_emoji
 class SlackReporter:
     """Sends formatted reports to Slack via incoming webhooks."""
     
-    def __init__(self, webhook_url: Optional[str] = None):
+    def __init__(self, webhook_urls: Optional[list[str]] = None):
         """
         Initialize the Slack reporter.
         
         Args:
-            webhook_url: Slack webhook URL. If not provided, reads from SLACK_WEBHOOK_URL env var.
+            webhook_urls: List of Slack webhook URLs. If not provided, reads from
+                         SLACK_WEBHOOK_URL and SLACK_WEBHOOK_URL_2 env vars.
         """
-        self.webhook_url = webhook_url or os.getenv("SLACK_WEBHOOK_URL")
-        if not self.webhook_url:
-            raise ValueError("Slack webhook URL is required. Set SLACK_WEBHOOK_URL environment variable.")
+        if webhook_urls:
+            self.webhook_urls = webhook_urls
+        else:
+            # Collect all webhook URLs from environment
+            urls = []
+            if os.getenv("SLACK_WEBHOOK_URL"):
+                urls.append(os.getenv("SLACK_WEBHOOK_URL"))
+            if os.getenv("SLACK_WEBHOOK_URL_2"):
+                urls.append(os.getenv("SLACK_WEBHOOK_URL_2"))
+            self.webhook_urls = urls
+        
+        if not self.webhook_urls:
+            raise ValueError("At least one Slack webhook URL is required. Set SLACK_WEBHOOK_URL environment variable.")
     
     def _escape_mrkdwn(self, text: str, max_length: int = 0) -> str:
         """
@@ -376,6 +387,35 @@ class SlackReporter:
         
         return {"blocks": blocks}
     
+    def _send_to_webhook(self, webhook_url: str, payload: dict) -> bool:
+        """
+        Send a payload to a single webhook URL.
+        
+        Args:
+            webhook_url: Slack webhook URL
+            payload: Message payload
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            response = requests.post(
+                webhook_url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                return True
+            else:
+                print(f"Failed to send to webhook. Status: {response.status_code}, Response: {response.text}")
+                return False
+                
+        except requests.RequestException as e:
+            print(f"Error sending to webhook: {e}")
+            return False
+    
     def send_report(
         self,
         videos: list[dict] = None,
@@ -385,7 +425,7 @@ class SlackReporter:
         report_time: Optional[datetime] = None
     ) -> bool:
         """
-        Build and send a report to Slack.
+        Build and send a report to all configured Slack webhooks.
         
         Args:
             videos: List of trending videos
@@ -395,31 +435,22 @@ class SlackReporter:
             report_time: Report generation time
             
         Returns:
-            True if successful, False otherwise
+            True if all sends successful, False if any failed
         """
         payload = self.build_report(videos, articles, releases, community, report_time)
         
-        try:
-            response = requests.post(
-                self.webhook_url,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                print("Report sent successfully to Slack!")
-                return True
+        success_count = 0
+        for i, webhook_url in enumerate(self.webhook_urls, 1):
+            if self._send_to_webhook(webhook_url, payload):
+                success_count += 1
+                print(f"Report sent successfully to Slack webhook {i}!")
             else:
-                print(f"Failed to send report. Status: {response.status_code}, Response: {response.text}")
-                return False
-                
-        except requests.RequestException as e:
-            print(f"Error sending report to Slack: {e}")
-            return False
+                print(f"Failed to send report to Slack webhook {i}")
+        
+        return success_count == len(self.webhook_urls)
     
     def send_test_message(self) -> bool:
-        """Send a test message to verify webhook configuration."""
+        """Send a test message to all configured webhooks."""
         payload = {
             "blocks": [
                 {
@@ -432,24 +463,15 @@ class SlackReporter:
             ]
         }
         
-        try:
-            response = requests.post(
-                self.webhook_url,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                print("Test message sent successfully!")
-                return True
+        success_count = 0
+        for i, webhook_url in enumerate(self.webhook_urls, 1):
+            if self._send_to_webhook(webhook_url, payload):
+                success_count += 1
+                print(f"Test message sent successfully to webhook {i}!")
             else:
-                print(f"Failed to send test message. Status: {response.status_code}")
-                return False
-                
-        except requests.RequestException as e:
-            print(f"Error sending test message: {e}")
-            return False
+                print(f"Failed to send test message to webhook {i}")
+        
+        return success_count == len(self.webhook_urls)
 
 
 def main():
