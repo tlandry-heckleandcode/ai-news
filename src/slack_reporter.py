@@ -61,8 +61,12 @@ class SlackReporter:
             days = hours_ago // 24
             time_str = f"{days} days ago"
         
+        summary = article.get('summary', '')
+        summary_line = f"   _{summary}_\n" if summary else ""
+        
         return (
             f"*{index}. {article['title']}*\n"
+            f"{summary_line}"
             f"   Source: {article['source']}\n"
             f"   Published: {time_str}\n"
             f"   <{article['url']}|Read Article>"
