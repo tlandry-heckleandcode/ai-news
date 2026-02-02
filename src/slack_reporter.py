@@ -22,11 +22,60 @@ class SlackReporter:
         if not self.webhook_url:
             raise ValueError("Slack webhook URL is required. Set SLACK_WEBHOOK_URL environment variable.")
     
+    def _escape_mrkdwn(self, text: str, max_length: int = 0) -> str:
+        """
+        Escape Slack mrkdwn special characters to prevent injection.
+        
+        Args:
+            text: Text to escape
+            max_length: Maximum length (0 = no limit)
+            
+        Returns:
+            Escaped and optionally truncated text
+        """
+        if not text:
+            return ""
+        
+        # Truncate first if needed
+        if max_length > 0 and len(text) > max_length:
+            text = text[:max_length - 3] + "..."
+        
+        # Escape special mrkdwn characters: & < > * _ ~ `
+        # Order matters: & must be first to avoid double-escaping
+        text = text.replace("&", "&amp;")
+        text = text.replace("<", "&lt;")
+        text = text.replace(">", "&gt;")
+        # These prevent formatting injection
+        text = text.replace("*", "\\*")
+        text = text.replace("_", "\\_")
+        text = text.replace("~", "\\~")
+        text = text.replace("`", "\\`")
+        return text
+    
+    def _safe_url(self, url: str) -> str:
+        """
+        Return URL only if it appears safe, otherwise empty string.
+        
+        Args:
+            url: URL to validate
+            
+        Returns:
+            Original URL if safe, empty string otherwise
+        """
+        if url and url.startswith(("https://", "http://")):
+            return url
+        return ""
+    
     def format_video(self, video: dict, index: int) -> str:
         """Format a single video for display."""
         stats = video.get("stats", {})
         views = stats.get("views", 0)
         days_ago = video.get("days_ago", 0)
+        
+        # Sanitize external input
+        title = self._escape_mrkdwn(video.get('title', ''), max_length=200)
+        channel = self._escape_mrkdwn(video.get('channel', ''), max_length=100)
+        url = self._safe_url(video.get('url', ''))
         
         # Format views with commas
         views_str = f"{views:,}"
@@ -39,16 +88,26 @@ class SlackReporter:
         else:
             time_str = f"{days_ago} days ago"
         
-        return (
-            f"*{index}. {video['title']}*\n"
-            f"   Channel: {video['channel']}\n"
-            f"   Views: {views_str} | Published: {time_str}\n"
-            f"   <{video['url']}|Watch on YouTube>"
-        )
+        # Build output with safe values
+        lines = [
+            f"*{index}. {title}*",
+            f"   Channel: {channel}",
+            f"   Views: {views_str} | Published: {time_str}",
+        ]
+        if url:
+            lines.append(f"   <{url}|Watch on YouTube>")
+        
+        return "\n".join(lines)
     
     def format_article(self, article: dict, index: int) -> str:
         """Format a single article for display."""
         hours_ago = article.get("hours_ago", 0)
+        
+        # Sanitize external input
+        title = self._escape_mrkdwn(article.get('title', ''), max_length=200)
+        source = self._escape_mrkdwn(article.get('source', ''), max_length=100)
+        summary = self._escape_mrkdwn(article.get('summary', ''), max_length=500)
+        url = self._safe_url(article.get('url', ''))
         
         # Time description
         if hours_ago < 1:
@@ -61,16 +120,16 @@ class SlackReporter:
             days = hours_ago // 24
             time_str = f"{days} days ago"
         
-        summary = article.get('summary', '')
-        summary_line = f"   _{summary}_\n" if summary else ""
+        # Build output with safe values
+        lines = [f"*{index}. {title}*"]
+        if summary:
+            lines.append(f"   _{summary}_")
+        lines.append(f"   Source: {source}")
+        lines.append(f"   Published: {time_str}")
+        if url:
+            lines.append(f"   <{url}|Read Article>")
         
-        return (
-            f"*{index}. {article['title']}*\n"
-            f"{summary_line}"
-            f"   Source: {article['source']}\n"
-            f"   Published: {time_str}\n"
-            f"   <{article['url']}|Read Article>"
-        )
+        return "\n".join(lines)
     
     def build_report(
         self,
@@ -132,13 +191,15 @@ class SlackReporter:
                         "text": self.format_video(video, i)
                     }
                 }
-                # Add thumbnail if available
-                thumbnail = video.get("thumbnail")
+                # Add thumbnail if available (validate URL)
+                thumbnail = self._safe_url(video.get("thumbnail", ""))
                 if thumbnail:
+                    # Alt text is plain text, just truncate (no mrkdwn escaping needed)
+                    alt_text = video.get("title", "Video thumbnail")[:75]
                     section["accessory"] = {
                         "type": "image",
                         "image_url": thumbnail,
-                        "alt_text": video.get("title", "Video thumbnail")[:75]
+                        "alt_text": alt_text
                     }
                 blocks.append(section)
         else:
@@ -170,13 +231,15 @@ class SlackReporter:
                         "text": self.format_article(article, i)
                     }
                 }
-                # Add thumbnail if available
-                thumbnail = article.get("thumbnail")
+                # Add thumbnail if available (validate URL)
+                thumbnail = self._safe_url(article.get("thumbnail", ""))
                 if thumbnail:
+                    # Alt text is plain text, just truncate (no mrkdwn escaping needed)
+                    alt_text = article.get("title", "Article thumbnail")[:75]
                     section["accessory"] = {
                         "type": "image",
                         "image_url": thumbnail,
-                        "alt_text": article.get("title", "Article thumbnail")[:75]
+                        "alt_text": alt_text
                     }
                 blocks.append(section)
         else:
