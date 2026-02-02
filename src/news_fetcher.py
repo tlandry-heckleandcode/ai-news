@@ -195,8 +195,17 @@ class NewsFetcher:
             Image URL or None if not found
         """
         try:
-            # Resolve Google News redirect URLs to get actual article URL
+            # Skip Google News URLs - they use JavaScript redirects that we can't follow,
+            # and fetching them returns Google's og:image instead of the article's image
+            if 'news.google.com' in url:
+                return None
+            
+            # Resolve any redirect URLs to get actual article URL
             resolved_url = self._resolve_redirect_url(url)
+            
+            # Skip if still a Google News URL after resolution
+            if 'news.google.com' in resolved_url:
+                return None
             
             response = self.session.get(resolved_url, timeout=5, allow_redirects=True)
             if response.status_code != 200:
