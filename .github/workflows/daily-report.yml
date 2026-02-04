@@ -32,3 +32,27 @@ jobs:
           SLACK_WEBHOOK_URL_2: ${{ secrets.SLACK_WEBHOOK_URL_2 }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python src/main.py
+
+  # YouTube Policy Intelligence Report (separate from AI Trends)
+  policy-report:
+    runs-on: ubuntu-latest
+    # Only run if SLACK_WEBHOOK_URL_POLICY secret exists
+    if: ${{ vars.ENABLE_POLICY_REPORT == 'true' }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      
+      - name: Run Policy Intelligence Report
+        env:
+          SLACK_WEBHOOK_URL_POLICY: ${{ secrets.SLACK_WEBHOOK_URL_POLICY }}
+        run: python src/policy_main.py
